@@ -1,0 +1,53 @@
+name: Build iOS dylib
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare build directory
+        run: |
+          mkdir -p build
+
+      - name: Build dylib
+        run: |
+          xcrun --sdk iphoneos clang \
+            -dynamiclib \
+            -arch arm64 \
+            -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" \
+            -framework Foundation \
+            -framework UIKit \
+            src/main.m \
+            -o build/MyDylib.dylib
+
+      - name: Verify dylib
+        run: |
+          file build/MyDylib.dylib
+          otool -L build/MyDylib.dylib
+
+      - name: Package cache_res
+        run: |
+          cp cache_res build/cache_res
+
+      - name: Create package
+        run: |
+          cd build
+          zip -r ../MyDylib-iOS-arm64.zip MyDylib.dylib cache_res
+
+      - name: Upload dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyDylib-iOS-arm64
+          path: |
+            build/MyDylib.dylib
+            build/cache_res
+            MyDylib-iOS-arm64.zip
