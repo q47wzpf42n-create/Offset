@@ -14,40 +14,62 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare build directory
+      - name: Install Theos
         run: |
-          mkdir -p build
+          export THEOS="$HOME/theos"
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+
+          bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+
+      - name: Check project
+        run: |
+          echo "Project files:"
+          find . -maxdepth 2 -type f | sort
+
+          echo
+          echo "Theos:"
+          ls -la "$THEOS"
 
       - name: Build dylib
         run: |
-          xcrun --sdk iphoneos clang \
-            -dynamiclib \
-            -arch arm64 \
-            -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" \
-            -framework Foundation \
-            -framework UIKit \
-            main.m \
-            -o build/MyDylib.dylib
+          make clean
+          make
+
+      - name: Find dylib
+        run: |
+          find . -type f -name "*.dylib" -print
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p build
+
+          DYLIB="$(find . -type f -name '*.dylib' \
+            -not -path './build/*' \
+            -print -quit)"
+
+          if [ -z "$DYLIB" ]; then
+            echo "ERROR: dylib was not generated"
+            exit 1
+          fi
+
+          cp "$DYLIB" build/MyDylib.dylib
+
+          if [ -f cache_res ]; then
+            cp cache_res build/cache_res
+          fi
 
       - name: Verify dylib
         run: |
           file build/MyDylib.dylib
           otool -L build/MyDylib.dylib
 
-      - name: Package cache_res
-        run: |
-          cp cache_res build/cache_res
-
-      - name: Create package
+      - name: Package
         run: |
           cd build
-          zip -r ../MyDylib-iOS-arm64.zip MyDylib.dylib cache_res
+          zip -r ../MyDylib-iOS.zip .
 
-      - name: Upload dylib
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MyDylib-iOS-arm64
-          path: |
-            build/MyDylib.dylib
-            build/cache_res
-            MyDylib-iOS-arm64.zip
+          name: MyDylib-iOS
+          path: MyDylib-iOS.zip
