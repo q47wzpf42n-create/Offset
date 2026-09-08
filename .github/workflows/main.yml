@@ -32,8 +32,11 @@ jobs:
 
       - name: Build dylib
         run: |
-          make clean
-          make
+         export THEOS=/Users/runner/theos
+         export TARGET=iphone:clang:latest:13.0
+         export ARCHS="arm64 arm64e"
+         make clean
+         make
 
       - name: Find dylib
         run: |
