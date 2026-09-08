@@ -1,0 +1,127 @@
+#import <UIKit/UIKit.h>
+#include <mach/mach.h>
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#include <stdint.h>
+#include <string.h>
+
+static const uint8_t kFind[]    = { 0x62, 0x6F, 0x64, 0x79 };
+static const uint8_t kReplace[] = { 0x68, 0x65, 0x61, 0x64 };
+static const size_t  kPatLen    = 4;
+static const CGFloat kSwipeThreshold = 5.0f;
+
+// ─── dispatch_once_t — JVM-level guarantee: fires ONCE, never again ──────────
+static dispatch_once_t gOnceToken = 0;
+static BOOL   gTracking = NO;
+static CGFloat gStartY  = 0.0f;
+
+static kern_return_t setProt(void *addr, size_t len, vm_prot_t prot) {
+    vm_address_t base = (vm_address_t)addr & ~(vm_address_t)(vm_page_size - 1);
+    vm_size_t    size = len + ((vm_address_t)addr - base);
+    return vm_protect(mach_task_self(), base, size, FALSE, prot);
+}
+
+static uint32_t scanAndPatch(void) {
+    uint32_t hits = 0;
+    uint32_t nimgs = _dyld_image_count();
+
+    for (uint32_t i = 0; i < nimgs; i++) {
+        const struct mach_header *mhRaw = _dyld_get_image_header(i);
+        if (!mhRaw || mhRaw->magic != MH_MAGIC_64) continue;
+
+        const struct mach_header_64 *mh = (const struct mach_header_64 *)mhRaw;
+        intptr_t slide = _dyld_get_image_vmaddr_slide(i);
+        const uint8_t *lc = (const uint8_t *)(mh + 1);
+
+        for (uint32_t ci = 0; ci < mh->ncmds; ci++) {
+            const struct load_command *cmd = (const struct load_command *)lc;
+
+            if (cmd->cmd == LC_SEGMENT_64) {
+                const struct segment_command_64 *seg =
+                    (const struct segment_command_64 *)cmd;
+
+                BOOL scan = (strncmp(seg->segname, "__DATA", 6) == 0 ||
+                             strncmp(seg->segname, "__TEXT", 6) == 0 ||
+                             strncmp(seg->segname, "__AUTH", 6) == 0);
+
+                if (scan && seg->vmsize >= kPatLen) {
+                    uint8_t *base = (uint8_t *)(uintptr_t)(seg->vmaddr + slide);
+
+                    for (uint64_t off = 0; off + kPatLen <= seg->vmsize; off++) {
+                        if (memcmp(base + off, kFind, kPatLen) != 0) continue;
+
+                        uint8_t *target = base + off;
+                        if (setProt(target, kPatLen,
+                                    VM_PROT_READ | VM_PROT_WRITE) != KERN_SUCCESS)
+                            continue;
+
+                        memcpy(target, kReplace, kPatLen);
+                        __sync_synchronize();
+                        setProt(target, kPatLen, VM_PROT_READ);
+                        hits++;
+                        NSLog(@"[SwipePatcher] ✓ hit #%u @ %p", hits, (void *)target);
+                    }
+                }
+            }
+            lc += cmd->cmdsize;
+        }
+    }
+    return hits;
+}
+
+// ─── dispatch_once: sau khi block này chạy 1 lần, token bị lock vĩnh viễn ────
+static void triggerPatch(void) {
+    dispatch_once(&gOnceToken, ^{
+        dispatch_async(
+            dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+            uint32_t hits = scanAndPatch();
+            NSLog(@"[SwipePatcher] done — %u site(s) patched. Will never run again.",
+                  hits);
+        });
+    });
+}
+
+%hook UIWindow
+
+- (void)sendEvent:(UIEvent *)event {
+    %orig;
+
+    // gOnceToken != 0 sau lần đầu → bypass hoàn toàn, zero overhead
+    if (gOnceToken) return;
+
+    NSSet<UITouch *> *touches = [event allTouches];
+    if (!touches.count) return;
+
+    UITouch  *touch = touches.anyObject;
+    CGPoint   loc   = [touch locationInView:self];
+
+    switch (touch.phase) {
+        case UITouchPhaseBegan:
+            gStartY   = loc.y;
+            gTracking = YES;
+            break;
+
+        case UITouchPhaseMoved: {
+            if (!gTracking) break;
+            CGFloat deltaY = gStartY - loc.y;
+            if (deltaY > kSwipeThreshold) {
+                gTracking = NO;
+                triggerPatch();
+            }
+            break;
+        }
+
+        case UITouchPhaseEnded:
+        case UITouchPhaseCancelled:
+            gTracking = NO;
+            break;
+
+        default: break;
+    }
+}
+
+%end
+
+%ctor {
+    NSLog(@"[SwipePatcher] loaded — swipe ↑ once to patch. Once only.");
+}
