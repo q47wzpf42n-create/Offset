@@ -26,7 +26,7 @@ jobs:
             -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" \
             -framework Foundation \
             -framework UIKit \
-            src/main.m \
+            main.m \
             -o build/MyDylib.dylib
 
       - name: Verify dylib
